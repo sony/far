@@ -1,0 +1,159 @@
+# AI2-THOR iTHOR TOUR/loopnav episodes, corpus v2 (generator loopnav-ithor-0.6.x),
+# pre-computed SDXL-VAE
+# latents (scripts/data/build_latent_dataset_ai2thor.py -> datasets/ai2thor_v2/
+# latent). Same contract as ai2thor_latent: pair with `model/tokenizer=sdxl_vae`
+# (latents at its 0.13025 scale), 256x256, fps 10, max_frame_offset 10 (1 s
+# stride horizon), len_traj_pred set at launch; THORBackend serves latents +
+# z-up poses + cumulative interaction counts.
+#
+# What changed vs the v0.4 corpus (ai2thor_latent) — the generator rules:
+#   hidden-inventory-carry        picked-up objects are not rendered in hand;
+#   post-interaction-dwell-1.9s   the agent observes the result of every
+#                                 open/close/pickup/put for ~1.9 s (19 frames,
+#                                 with a +-10 deg micro-pan), so post-change
+#                                 evidence EXISTS in the pool;
+#   canonical-inspection-pose     every inspection/revisit at 1.0 m, 25 deg
+#                                 down, station centred -> stale/fresh pairs
+#                                 at identical pose;
+#   full-v1-station-tour          every act episode fires >= 1 chain (no
+#                                 event-free act episodes).
+# Consequences for the knobs below: episodes are longer (median 881 frames vs
+# ~610) and reach `eval_start` later (median 590, p10 294, p90 1023), so a
+# 200-frame pool is 20 s of a ~60 s exploration phase; launchers override
+# context_pool_size (400 in the THOR launchers). Retriever keys: the v0.4
+# tower's keys are cached as `latents.keys_thor_v1.npy` (key_suffix
+# ".keys_thor_v1.npy"); a v6-pretrained tower gets its own suffix.
+spec:
+  _target_: far.builders.data.build_dataspec
+  # Identity-range stats — the same convention loopnav_latent and
+  # soundspaces_latent train with (goal displacements enter normalize_data as
+  # 2x-1; worldmem/posefa invert exactly via these stats).
+  local_pos_stats:
+    min: [0, 0, 0]
+    max: [1, 1, 1]
+  meters_per_waypoint: 1.0
+  max_frame_offset: 10.0
+  len_traj_pred: ${len_traj_pred}
+  planner_mu_init: [-0.1, 0, 0, 0, 0]
+  planner_sigma_init: [0.02, 0.1, 0, 0, 0.3142]
+  pose_fields: ["x", "y", "z", "pitch", "yaw"]
+  pose_dim: 5
+  pos_dim: 3
+  angle_dim: 2
+  pose_mode: "3d"
+  fps: 10.0
+
+shared:
+  manifest_path: results/manifests/ai2thor_v2/ai2thor_v2_latent.json
+  backend:
+    _target_: far.data.backends.THORBackend
+    # Pre-computed retriever-key sidecar inside each episode dir
+    # (latents<key_suffix>): ".keys_thor_v1.npy" = the v0.4 jepa tower
+    # (0400000) applied to this corpus; null -> live QueryViT encoding.
+    # Poses are ALWAYS standardized to the z-up frame and pitch is recovered
+    # from the stored quaternion (THOR agents pitch up to ~55 deg while
+    # inspecting), so there is no standard_frame knob.
+    key_suffix: null
+    # Per-frame CHANGE MASK sidecar (latents<mask_suffix>, built by
+    # scripts/data/build_masks_ai2thor.py): a (32, 32) binary mask per
+    # EVAL frame marking the latent tokens where the room differs from the same
+    # viewpoint earlier in the episode. Consumed as a diffusion-loss weight via
+    # `model.mask_loss_lambda`; null -> uniform loss. Setting it costs nothing
+    # when the lambda is 0 (the mask is loaded but never used).
+    mask_suffix: null
+  transform: null
+
+sampler:
+  random_clip:
+    _target_: far.data.samplers.RandomClipSampler
+    clip_len: 16
+    frame_stride: 5
+  # context_pool_size 200 = 20 s at fps 10. v2 episodes reach `eval_start`
+  # at a median of frame 590 (p10 294), so essentially none left-pad at 200
+  # and ~23% do at the launchers' 400 — padding is masked by context_mask.
+  context_goal:
+    _target_: far.data.samplers.ContextGoalSampler
+    context_pool_size: 200
+    len_traj_pred: ${len_traj_pred}
+    goals_per_obs: ${goals_per_obs}
+    # Event bias (see ContextGoalSampler): with probability event_bias_p the
+    # (current, goals) pair is placed tightly around one interaction span —
+    # current from 3 frames INTO the animation to 5 before it (negative
+    # event_pre = inside the swing, the state a stride-2 rollout continues
+    # from), goals 0-8 frames after its START (mid-swing through just-settled;
+    # an open is ~6 frames, a pickup 3) — so the label maps to the state change
+    # itself instead of the average over a 6.4 s window. 0 = the plain
+    # uniform draw (bit-identical to before). The TEST sampler below is never
+    # biased. NOTE the per-clip Bernoulli tops out at p x 21% realized — only
+    # ~21% of act clips have an eval-leg span (surface-only eval legs have
+    # none) and the rest silently fall back to uniform. For an EXACT marginal
+    # rate use the train base_dataset's event_frac / event_index_path below
+    # (clip substitution + forced draw) and leave event_bias_p at 0; keep
+    # whichever knob is used equal across arms so they stay samples-matched.
+    event_bias_p: 0.0
+    event_phase: eval         # "any" | "eval": "eval" anchors ONLY on eval-leg
+                              # spans. "any" also anchors on the outbound
+                              # demonstration, where current and goal are ~6
+                              # frames apart with the camera stationary, so the
+                              # pool's tail is already a near-copy of the goal.
+    event_codes: null         # null = all of open/close/pickup/put (0..3)
+    event_pre: [-3, 5]
+    event_post: [0, 8]
+    event_goal_anchor: start  # "start" | "end" (offsets from the animation's first/last frame)
+    # Context pool = EXPLORATION history only (frames before eval_start), never
+    # the agent's own eval-leg frames — the same pool the rollout protocol uses
+    # ("exploration" POOL_PHASE), so a revisit must be answered from memory of
+    # the room BEFORE it was rearranged, not from a fresher eval-leg look.
+    pool_phase: pre_eval
+  context_goal_test:
+    _target_: far.data.samplers.ContextGoalSampler
+    context_pool_size: 200
+    len_traj_pred: ${len_traj_pred}
+    goals_per_obs: 4
+    pool_phase: pre_eval      # exploration-only pool, matched to training
+  context_traj:
+    _target_: far.data.samplers.ContextTrajectorySampler
+    context_pool_size: 200
+    len_traj_pred: ${len_traj_pred}
+    pool_phase: pre_eval      # (current == eval_start here, so this is the same set)
+
+formatter:
+  frame:
+    _target_: far.data.formatters.FrameFormatter
+  context_pose:
+    _target_: far.data.formatters.ContextPoseFormatter
+    spec: ${ai2thor_v2_latent.spec}
+
+train:
+  _target_: far.data.datasets.FormattedVideoDataset
+  formatter: ${ai2thor_v2_latent.formatter.context_pose}
+  base_dataset:
+    _target_: far.data.datasets.VideoDataset
+    manifest_path: ${ai2thor_v2_latent.shared.manifest_path}
+    index_path: results/indices/ai2thor_v2/ai2thor_v2_latent_train.json
+    backend: ${ai2thor_v2_latent.shared.backend}
+    sampler: ${ai2thor_v2_latent.sampler.context_goal}
+    transform: ${ai2thor_v2_latent.shared.transform}
+    # Event-biased clip substitution (TRAIN ONLY — substituted items break
+    # dataset[i] determinism, so the test split must never get these): with
+    # probability event_frac the drawn clip is replaced by one from the event
+    # index and the sampler is FORCED into the event-anchored draw, making the
+    # marginal event-pair rate exactly event_frac (vs the eroded Bernoulli
+    # above). The index is built by scripts/data/build_event_index_ai2thor.py
+    # from the train index with the sampler's event params baked in;
+    # VideoDataset refuses a stale one (id or param mismatch) at startup.
+    # null = off (bit-identical to before). Launchers override, e.g.
+    #   ai2thor_v2_latent.train.base_dataset.event_frac=0.3
+    event_index_path: results/indices/ai2thor_v2/ai2thor_v2_latent_train_events.json
+    event_frac: null
+
+test:
+  _target_: far.data.datasets.FormattedVideoDataset
+  formatter: ${ai2thor_v2_latent.formatter.context_pose}
+  base_dataset:
+    _target_: far.data.datasets.VideoDataset
+    manifest_path: ${ai2thor_v2_latent.shared.manifest_path}
+    index_path: results/indices/ai2thor_v2/ai2thor_v2_latent_test.json
+    backend: ${ai2thor_v2_latent.shared.backend}
+    sampler: ${ai2thor_v2_latent.sampler.context_goal_test}
+    transform: ${ai2thor_v2_latent.shared.transform}

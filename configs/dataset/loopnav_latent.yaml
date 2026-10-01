@@ -1,0 +1,82 @@
+spec:
+  _target_: far.builders.data.build_dataspec
+  local_pos_stats:
+    min: [0, 0, 0]
+    max: [1, 1, 1]
+  meters_per_waypoint: 1.0
+  max_frame_offset: 20.0
+  len_traj_pred: ${len_traj_pred}
+  planner_mu_init: [-0.1, 0, 0, 0, 0]
+  planner_sigma_init: [0.02, 0.1, 0, 0, 0.3142]
+  pose_fields: ["x", "y", "z", "pitch", "yaw"]
+  pose_dim: 5
+  pos_dim: 3
+  angle_dim: 2
+  pose_mode: "3d"
+  fps: 20.0
+
+shared:
+  manifest_path: results/manifests/loopnav/loopnav_latent.json
+  backend:
+    _target_: far.data.backends.LatentLoopNavBackend
+    # Which pre-computed key set to load: `<clip>.npy` -> `<clip><key_suffix>`.
+    # Override per experiment, e.g. `...backend.key_suffix=.keys_0300000.npy`.
+    # null disables key loading (forces on-the-fly QueryViT encoding).
+    key_suffix: .keys.npy
+    # true remaps raw Minecraft pose axes ([x, height, z], forward
+    # (-sin y, -cos y) in (x, z)) to the z-up standard frame assumed by the
+    # pose stack (global_to_local_pose / worldmem / PluckerEmbedding):
+    # [x', y', z'] = [-z, -x, height], forward (cos y, sin y). REQUIRED for
+    # geometrically-correct pose conditioning (cdit_mod_pose_fa); keep false
+    # for checkpoints trained on the raw convention.
+    standard_frame: false
+  transform: null
+
+sampler:
+  random_clip:
+    _target_: far.data.samplers.RandomClipSampler
+    clip_len: 16
+    frame_stride: 10
+  context_goal:
+    _target_: far.data.samplers.ContextGoalSampler
+    context_pool_size: 200 # 10 seconds of context pool
+    len_traj_pred: ${len_traj_pred}
+    goals_per_obs: ${goals_per_obs}
+  context_goal_test:
+    _target_: far.data.samplers.ContextGoalSampler
+    context_pool_size: 200 # 10 seconds of context pool
+    len_traj_pred: ${len_traj_pred}
+    goals_per_obs: 4
+  context_traj:
+    _target_: far.data.samplers.ContextTrajectorySampler
+    context_pool_size: 200
+    len_traj_pred: ${len_traj_pred}
+
+formatter:
+  frame:
+    _target_: far.data.formatters.FrameFormatter
+  context_pose:
+    _target_: far.data.formatters.ContextPoseFormatter
+    spec: ${loopnav_latent.spec}
+
+train:
+  _target_: far.data.datasets.FormattedVideoDataset
+  formatter: ${loopnav_latent.formatter.context_pose}
+  base_dataset:
+    _target_: far.data.datasets.VideoDataset
+    manifest_path: ${loopnav_latent.shared.manifest_path}
+    index_path: results/indices/loopnav/loopnav_latent_train.json
+    backend: ${loopnav_latent.shared.backend}
+    sampler: ${loopnav_latent.sampler.context_goal}
+    transform: ${loopnav_latent.shared.transform}
+
+test:
+  _target_: far.data.datasets.FormattedVideoDataset
+  formatter: ${loopnav_latent.formatter.context_pose}
+  base_dataset:
+    _target_: far.data.datasets.VideoDataset
+    manifest_path: ${loopnav_latent.shared.manifest_path}
+    index_path: results/indices/loopnav/loopnav_latent_test.json
+    backend: ${loopnav_latent.shared.backend}
+    sampler: ${loopnav_latent.sampler.context_goal_test}
+    transform: ${loopnav_latent.shared.transform}

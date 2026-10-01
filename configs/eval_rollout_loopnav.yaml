@@ -1,0 +1,43 @@
+# LoopNav: the paper's rollout evaluation (arms + protocol). Inherits every shared
+# knob from eval_rollout.yaml; select it with `--config-name eval_rollout_loopnav` (the
+# bash_scripts/<corpus>/eval_rollout_sharded.sh launchers do).
+defaults:
+  - eval_rollout
+  - _self_
+
+arms:
+  B_posefa_temporal:
+    run_dir: models/loopnav/temporal
+    ckpt: "0700000"
+  B_posefa_worldmem:
+    run_dir: models/loopnav/worldmem
+    ckpt: "0700000"
+  pnp_meta_only:
+    run_dir: models/loopnav/far_meta
+    ckpt: "0700000"
+  pnp_jepa_frozen:
+    run_dir: models/loopnav/far_frozen_encoder
+    ckpt: "0700000"
+  pnp_visual_only:
+    run_dir: models/loopnav/far_visual
+    ckpt: "0700000"
+  pnp_learned_vmz:
+    run_dir: models/loopnav/far_multicue
+    ckpt: "0700000"
+  # LongLive-RAG baseline: content-similarity retrieval (query_conditioning=none,
+  # scoring=visual, frozen offline-trained encoder). The loopnav backend serves no
+  # cues, so every arm live-encodes the pool with its own QueryViT; only the
+  # SoundSpaces cue arms consume cached keys.
+  pnp_longlive:
+    run_dir: models/loopnav/longlive_rag
+    ckpt: "0700000"
+  # Gate ablation of the fused arm: the same per-query standardized visual / metadata
+  # channels as pnp_learned_vmz, fused with a FIXED neutral weight (0.5, the learned
+  # gate's zero-init point); its gap to pnp_learned_vmz isolates the learned weighting.
+  pnp_ablz:
+    run_dir: models/loopnav/far_ablation_z
+    ckpt: "0700000"
+
+dataset: loopnav_latent
+output_dir: results/rollout_eval/loopnav_0700000
+rollout_stride: 4

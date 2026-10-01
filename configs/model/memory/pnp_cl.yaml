@@ -1,0 +1,148 @@
+_target_: far.memories.pnp_cl.PnPRetrieval
+
+# Optional retriever (QueryViT) checkpoint. null → random init. Otherwise
+# `instantiate_with_optional_ckpt` (build_ldwm) pops this and calls
+# `PnPRetrieval.load_weights`, which loads the `"memory"` weights from a
+# retriever pre-training checkpoint (scripts/world/train_latent_retriever.py)
+# or a bare state_dict. Use this to warm-start the retriever in full training:
+#   model.memory.ckpt_path=<pretrain run>/checkpoints/latest.pth.tar
+ckpt_path: null
+
+# Number of consecutive past frames packed into one chunk. Selection is across
+# chunks, so chunking is the temporal-diversity guard (distinct picks are
+# ≥ chunk_size frames apart); each selected chunk is collapsed to its single
+# max-scoring representative frame.
+chunk_size: 20
+
+# K — number of context *sets* returned per (sample, goal); set 0 (the
+# top-ranked set) conditions generation, the rest feed the EM/RAG retriever
+# loss.
+num_sets: 4
+
+# Temperature τ for the per-set softmax `softmax(set_score / τ)` that forms the
+# retriever prior p_η over the K sets (and feeds the soft-EM posterior). Set
+# scores are sums of `num_memories` cosine sims, range [-num_memories, +num_memories],
+# so τ=1.0 over that narrow range gives a near-uniform prior — the EM retriever
+# loss then sits at ~log K with little gradient. Lower τ (e.g. 0.1) sharpens the
+# prior so it can express a real per-set preference.
+softmax_temperature: 1.0
+
+# ── Ranking recipe ────────────────────────────────────────────────────────────
+# scoring: "visual"        — QueryViT key–query cosine only (no scorer built);
+#          "visual+meta"   — legacy fused form: visual_scale · cos + meta_logit
+#                            with a LEARNABLE visual_scale (init 1; zero-init
+#                            scorer ⇒ exactly the visual ranking at step 0).
+#                            Every existing fused checkpoint strict-loads into
+#                            this mode unchanged;
+#          "visual+meta_z" — each channel standardized PER QUERY (masked
+#                            mean/std over the pool's valid frames), then the
+#                            bounded mix (1−λ~)·z_meta + λ~·z_visual. λ comes
+#                            from ONE shared linear gate scoring each channel
+#                            from the same DETACHED features — [raw top1,
+#                            mean, std] + a fixed one-hot source tag + Δt-to-
+#                            goal via per-channel dt·tag slots (the tag lets
+#                            the shared gate learn channel-specific trust;
+#                            shared-verbatim features cancel in the softmax
+#                            difference, hence the tag interaction and no
+#                            bias) — λ = softmax over the
+#                            channel logits, squashed to λ~ = ε + (1−2ε)λ
+#                            (ε = gate_eps) so both channels always keep ≥ ε
+#                            weight. Zero-init gate ⇒ λ~ = 0.5 at step 0;
+#                            the λ-limits are ε-mixtures of the pure rankings;
+#          "abl+visual+meta_z"
+#                          — ABLATION of the learned gate: the same per-query
+#                            standardized channels fused with FIXED λ~ ≡ 0.5
+#                            (the gate's zero-init point; no fusion params).
+#                            Gap to "visual+meta_z" = the learned confidence
+#                            weighting, standardization held fixed;
+#          "meta"          — the metadata cross-scorer logit ALONE (no visual
+#                            term, no fusion parameter) — the trained
+#                            metadata-only arm.
+# Each mode creates ONLY its own fusion parameters, so checkpoints are
+# mode-exact and strict-load. The chosen logit drives EVERYTHING downstream:
+# chunk-max, rank-partition selection, the set softmax / EM prior,
+# representative-frame choice, and the local-RAG frame prior. The meta modes
+# need the dataset stats + stride conversion, e.g. from the CLI:
+#   model.memory.scoring=visual+meta_z \
+#   'model.memory.local_pos_stats=${loopnav_latent.spec.local_pos_stats}' \
+#   model.memory.stride_to_seconds=1.0
+scoring: visual
+metadata_hidden: 128
+# Linear layers in the metadata cross-scorer MLP (GELU between; last layer
+# zero-init). 2 = the legacy shape — existing checkpoints strict-load only at
+# this depth (deeper scorers add mlp.4, mlp.6, ... and train fresh).
+metadata_layers: 2
+local_pos_stats: null
+stride_to_seconds: 1.0
+# AGENT-STATE CUE (the dynamic-agent AI2-THOR corpus): true -> the
+# metadata cross-scorer also reads each pool frame's second-agent detection
+# `[vi, dx, dy, vi', dx', dy']` (+ the pair displacement rotated into the current
+# frame) through a ZERO-INIT block, so the retriever can rank frames by "an agent
+# was seen here, heading that way" and not by geometry alone. The dataset must
+# serve `context_agent_state` (THORDynBackend `agent_state: true`); needs a meta
+# scoring mode (ignored under "visual"). Ranking is unchanged at step 0 and every
+# metadata checkpoint loads (the block is expected-missing).
+metadata_agent_state: false
+
+# ── Encoder training mode ─────────────────────────────────────────────────────
+# encoder_mode: "frozen"   — QueryViT frozen, no adapter (pure pretrained keys
+#                            and queries);
+#               "adapter"  — QueryViT frozen + zero-init residual QUERY adapter
+#                            (width adapter_hidden; identity at step 0). KEYS
+#                            are used as-is, so the key space stays the frozen
+#                            pretrained one;
+#               "finetune" — full QueryViT trainable.
+encoder_mode: frozen
+adapter_hidden: 384
+
+# Query-encoder input:
+#   "frame" (default) — the CURRENT latent frame (visual query; all existing
+#                       checkpoints/configs);
+#   "cue"             — a per-step retrieval-cue window supplied by the dataset
+#                       (e.g. the current binaural audio window via the
+#                       backend's audio_mode="cue" -> formatter query_cue). The
+#                       memory is modality-agnostic; cue mode REQUIRES cached
+#                       pool keys (backend key_suffix, e.g. ".keys_audio.npy")
+#                       — the pool side is never live-encoded from cues.
+query_source: frame
+
+# Query conditioning:
+#   "action" (default) — queries encode (frame/cue, action, stride): the
+#                        action-conditioned "what will I see there" query;
+#   "none"             — CONTENT queries (null action/stride, the same encode
+#                        as keys): pure current-observation similarity — the
+#                        LongLive-RAG baseline semantics. Parameter-free
+#                        switch; checkpoints load under either setting.
+query_conditioning: action
+
+# λ~ floor/ceiling for the "visual+meta_z" gate: λ~ = gate_eps + (1−2·gate_eps)·λ
+# keeps every channel's weight in [gate_eps, 1−gate_eps].
+gate_eps: 0.05
+
+# NOTE: the InfoNCE contrastive pre-training of the QueryViT is NOT configured
+# here — it lives in `configs/world_pretrain.yaml` (the `contrastive:` block)
+# and is computed by `scripts/world/train_latent_retriever.py`. This config is
+# retrieval-only; warm-start the QueryViT from a pre-training run via
+# `ckpt_path` above.
+
+# QueryViT is the ONLY encoder. With no action → content KEY (the chunk's
+# middle-frame retrieval key); with action+stride → action-conditioned QUERY.
+query_vit:
+  _target_: far.memories.pnp_cl.QueryViT
+  img_height: 18
+  img_width:  32
+  patch_size: 2
+  in_chans:  16
+  embed_dim: 384
+  depth: 6
+  num_heads: 12
+  action_dim: ${action_dim}
+  key_dim: 256
+  mlp_ratio: 4.0
+  # Optional INTERACTION-label pathway (AI2-THOR): width of the per-goal
+  # multi-hot of action types occurring in (current, goal] — `action_interact`
+  # from the formatter, 4 for THOR's open/close/pickup/put. 0 disables it, so
+  # pose-only corpora and checkpoints are unaffected. Conditions the QUERY
+  # only; keys stay pure content and remain cacheable. The embedding is
+  # zero-init, so enabling it reproduces a pose-only checkpoint exactly.
+  interact_dim: 0

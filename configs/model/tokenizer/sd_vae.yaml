@@ -1,0 +1,5 @@
+_target_: far.tokenizers.sd_vae.SD_VAE
+
+image_height: ${image_height}
+image_width: ${image_width}
+ckpt_path: stabilityai/sd-vae-ft-ema

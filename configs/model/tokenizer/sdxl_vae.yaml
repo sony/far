@@ -1,0 +1,10 @@
+_target_: far.tokenizers.sd_vae.SD_VAE
+
+image_height: ${image_height}
+image_width: ${image_width}
+# SDXL autoencoder — fp16-safe distillation of stabilityai/sdxl-vae (the stock
+# SDXL VAE overflows in fp16). Latent scaling factor 0.13025; pre-computed
+# SoundSpaces latents (scripts/data/build_latent_dataset_soundspaces.py) are
+# saved at exactly this scale.
+vae_scale: 0.13025
+ckpt_path: madebyollin/sdxl-vae-fp16-fix

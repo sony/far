@@ -1,0 +1,97 @@
+# --- Paths -------------------------------------------------------------------
+run_name: nwm_cdit_s   # experiment name; checkpoints saved to RESULT_ROOT/run_name/
+
+# --- Model architecture ------------------------------------------------------
+context_size: 4    # number of conditioning frames fed to the model
+action_dim: 3      # dimensionality of the action vector passed to ActionEmbedder
+pose_dim: 3
+image_height: 224  # input image resolution (must be divisible by 8)
+image_width: 224
+len_traj_pred: 128  # prediction horizon (frames)
+goals_per_obs: 4
+
+# --- Optimizer ---------------------------------------------------------------
+lr: 8e-5
+lr_mem: null           # learning rate for the memory module (pnp_cl ViTs etc.).
+                       # null → falls back to `lr` (single-group AdamW).
+                       # Float → memory params get their own AdamW param group at this
+                       # LR; ignored when the memory has no trainable parameters.
+weight_decay: 0.0
+grad_clip_val: 1.0
+
+# --- Training schedule -------------------------------------------------------
+iterations: 5000000
+warmup_steps: 5000     # 0 = no LR warmup; otherwise linear ramp from lr/5 → lr over N steps
+from_checkpoint: null  # path to a .pth.tar to resume from; null = start fresh (or auto-pick latest.pth.tar in checkpoint_dir)
+global_seed: 0
+log_every: 100     # log loss every N steps
+ckpt_every: 100000 # save a numbered KEEPER checkpoint every N steps (latest.pth.tar also refreshes here)
+latest_every: 10000 # additionally refresh latest.pth.tar (the preemption/resume anchor; cheap overwrite,
+                    # written atomically) every N steps; null -> fall back to ckpt_every
+eval_every: 2500   # run DreamSim evaluation every N steps
+
+# --- Decoupled RAG training (pnp_cl + soft-EM) -------------------------------
+# 0 = original per-step soft-EM (generator trained on all K sets, q-weighted).
+# >0 = decoupled mode: every step the generator trains hard-EM on the single
+#   top set (K=1 cost, full batch, single noise) + the per-step contrastive
+#   loss; every `rag_every` steps the retriever gets a forward-only, multi-noise
+#   RAG update (`LDWMCore.rag_step`). Lets the generator run at a large batch /
+#   `goals_per_obs` while the retriever still gets an accurate K-set signal.
+rag_every: 0
+rag_noise_levels: 4  # M stratified timesteps averaged in each rag_step (de-noises the posterior)
+# Which reward ranks the K candidate sets at rag steps:
+#   "diffusion" — rag_step: multi-noise diffusion loss (cheap; but single-step
+#       predictions do not differ in OBJECT STATE across contexts — measured);
+#   "ddim"      — rag_step_ddim: MASK-WEIGHTED x0 MSE on rag_ddim_steps-step
+#       DDIM SAMPLES (context-driven state differences only exist in
+#       multi-step samples; >= 8 steps is the cheapest statistically solid
+#       point). The weight is the change mask (model.rag_mask_loss_lambda,
+#       null = model.mask_loss_lambda), so sets are ranked by whether the
+#       sample renders WHAT CHANGED; plain sample MSE when no mask is served.
+#       ~ddim_steps·(K+S·local_rag) forwards per goal per rag step — pair with
+#       a LARGER rag_every (e.g. 100 vs 20).
+rag_mode: diffusion
+rag_ddim_steps: 8
+rag_mse_weight: 1.0
+# Local (within-chunk) RAG: when true, each rag_step ALSO ranks the S frames
+# inside one randomly-chosen top-K chunk (per sample/goal) by their single-frame
+# diffusion reward and distils it into pnp_cl's per-frame scores (only pnp_cl
+# supports it; other memories ignore the flag). Adds ~M·B·ng·S forward-only
+# (no_grad) evals per rag_step. `local_rag_weight` scales the local CE.
+local_rag: false
+local_rag_weight: 1.0
+# Score / distil the RAG step ONLY on the reveal-anchored draws of each batch
+# (the sampler's `event_anchored` flag; the dynamic-agent corpus). The uniform
+# short-horizon draws' reward is the predictor's loss on a context the current
+# frame already answers — a stale sighting there raises it, which teaches the
+# scorer to AVOID sightings (the predictor term dominates the reward; the
+# diffusion term varies by ~1e-3 across candidates). A rank with no anchored
+# row keeps the DDP collective alive with a x0 loss. The RAG step then costs
+# ~event_frac of a full one, so pair with a proportionally smaller rag_every.
+rag_anchored_only: false
+
+# --- Performance -------------------------------------------------------------
+bfloat16: true       # enable bf16 autocast and gradient scaler
+torch_compile: true  # compile model with torch.compile (~40% speedup)
+
+# --- Data loading ------------------------------------------------------------
+batch_size: 16
+eval_batch_size: null  # eval is no_grad inference on EMA weights — not bound by
+                       # the training batch's VRAM limit. null → falls back to
+                       # batch_size. Set explicitly (e.g. 64) so runs trained at
+                       # different batch sizes still evaluate the SAME clips at
+                       # the SAME sample count (comparable eval curves).
+num_workers: 12
+datasets: [loopnav_latent]
+
+defaults:
+  - dataset_registry
+  - model: ldwm
+  - wandb: far
+  - override hydra/job_logging: disabled
+  - _self_
+
+hydra:
+  output_subdir: null
+  run:
+    dir: .

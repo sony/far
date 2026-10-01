@@ -1,0 +1,29 @@
+_target_: far.generators.cdit_mod_pose_fa.CDiT
+depth: 12
+hidden_size: 768
+patch_size: 2
+num_heads: 12
+context_size: 4
+ckpt_path: null
+action_dim: ${action_dim}
+pose_dim: ${pose_dim}
+# ── Plücker pose conditioning (always on in this variant) ────────────────────
+# Per-token rays for target (goal pose recovered from `action` via
+# local_pos_stats), current (canonical), and past-context streams. Requires
+# action_dim == pose_dim == 5. Pair with model.condition_on_context_pose=true
+# and set local_pos_stats to the dataset spec for exact target rays, e.g.:
+#   model.generator.local_pos_stats="${loopnav_latent.spec.local_pos_stats}"
+fov_half_h: 52.5   # horizontal half-FOV in degrees (matches worldmem)
+fov_half_v: 37.5   # vertical   half-FOV in degrees
+local_pos_stats: null
+# Converts the target's `stride` (max_frame_offset units) onto the context
+# frames' seconds axis for the SHARED trajectory-time embedding:
+# stride_to_seconds = max_frame_offset / fps  (loopnav: 20 / 20 = 1.0).
+stride_to_seconds: 1.0
+# Optional INTERACTION channel (AI2-THOR): width of the per-goal multi-hot of
+# action types occurring in (current, target] — `action_interact` from the
+# formatter, 4 for THOR's open/close/pickup/put. 0 disables it. Pose deltas
+# cannot express "the container opens", so a THOR rollout needs this to render
+# the eval-leg reveal at all. Zero-init, so pose-only checkpoints load
+# unchanged and step 0 reproduces them exactly.
+interact_dim: 0

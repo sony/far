@@ -1,0 +1,24 @@
+# SoundSpaces v1: the paper's rollout evaluation (arms + protocol). Inherits every shared
+# knob from eval_rollout.yaml; select it with `--config-name eval_rollout_soundspaces` (the
+# bash_scripts/<corpus>/eval_rollout_sharded.sh launchers do).
+defaults:
+  - eval_rollout
+  - _self_
+
+arms:
+  ss_temporal:
+    run_dir: models/soundspaces_v1/temporal
+    ckpt: "0700000"
+  ss_worldmem:
+    run_dir: models/soundspaces_v1/worldmem
+    ckpt: "0700000"
+  ss_pnp_meta:
+    run_dir: models/soundspaces_v1/far_meta
+    ckpt: "0700000"
+  ss_pnp_amz:
+    run_dir: models/soundspaces_v1/far_multicue
+    ckpt: "0700000"
+
+dataset: soundspaces_latent
+output_dir: results/rollout_eval/ssv1_0700000_stride16_context12
+rollout_stride: 16

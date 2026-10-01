@@ -1,0 +1,33 @@
+# cdit_b_2_mod_pose_fa + the AGENT-STATE predictor.
+# `AgentStateCDiT` wraps the pose_fa DiT with `AgentStatePredictor` (attention
+# pooling over the retrieved slots' second-agent detections -> the goal's
+# `[vi, dx, dy]`, trained by a direct BCE + position loss) and conditions the
+# DiT on the prediction through a ZERO-INIT adaLN pathway. All DiT fields are
+# the pose_fa ones (flat, so `model.generator.*` overrides are unchanged).
+# Requires the dyn backend's `agent_state: true`.
+_target_: far.generators.agent_state.AgentStateCDiT
+depth: 12
+hidden_size: 768
+patch_size: 2
+num_heads: 12
+context_size: 4
+# A FLAT pose_fa checkpoint here is the WARM START: loaded strict into the DiT,
+# predictor and conditioning fresh -> step 0 reproduces that checkpoint.
+ckpt_path: null
+action_dim: ${action_dim}
+pose_dim: ${pose_dim}
+fov_half_h: 52.5
+fov_half_v: 37.5
+local_pos_stats: null
+stride_to_seconds: 1.0
+interact_dim: 0
+# ── predictor ────────────────────────────────────────────────────────────────
+predictor_dim: 128
+predictor_heads: 4
+# weight of the squared position error (goals with the agent in view) against
+# the presence BCE in the predictor's loss. Positions are metres, so squared
+# errors run to tens; 1.0 swamps the presence term.
+pos_loss_weight: 0.05
+# width of the per-slot detection: [vi, dx, dy] + the same at the paired
+# earlier frame (THORDynBackend `agent_state_pair_s`)
+state_dim: 6

@@ -1,0 +1,7 @@
+defaults:
+  - dataset@loopnav_latent: loopnav_latent
+  - dataset@soundspaces_latent: soundspaces_latent
+  - dataset@soundspaces_v2_latent: soundspaces_v2_latent
+  - dataset@ai2thor_v2_latent: ai2thor_v2_latent
+  - dataset@ai2thor_v3_latent: ai2thor_v3_latent
+  - dataset@ai2thor_dyn_latent: ai2thor_dyn_latent

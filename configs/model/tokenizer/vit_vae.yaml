@@ -1,0 +1,27 @@
+_target_: far.tokenizers.vit_vae.ViTVAE
+kl_weight: 1.0e-6
+lpips_weight: 0.0
+ckpt_path: models/oasis_500m_vit_vae.pth
+
+encoder:
+  _target_: far.tokenizers.vit_vae.Encoder
+  input_height: ${image_height}
+  input_width: ${image_width}
+  patch_size: 20
+  dim: 1024
+  depth: 6
+  heads: 16
+  latent_dim: 16
+  use_variational: true
+  mlp_ratio: 4.0
+
+decoder:
+  _target_: far.tokenizers.vit_vae.Decoder
+  input_height: ${image_height}
+  input_width: ${image_width}
+  patch_size: 20
+  dim: 1024
+  depth: 12
+  heads: 16
+  latent_dim: 16
+  mlp_ratio: 4.0

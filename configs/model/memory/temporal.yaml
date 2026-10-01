@@ -1,0 +1,2 @@
+_target_: far.memories.baselines.TemporalRetrieval
+interval: 1.0   # spacing between consecutive selected frames, in seconds (0 ≈ pick K most recent)

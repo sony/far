@@ -1,0 +1,117 @@
+# Retriever (QueryViT) contrastive pre-training entry config.
+# Used by `scripts/world/train_latent_retriever.py`. Warm-starts pnp_cl's
+# QueryViT with the InfoNCE contrastive objective before full world-model
+# training. ONLY the QueryViT is built — no generator / tokenizer / diffusion /
+# compressor. The contrastive loss itself lives in the training script
+# (`ContrastivePretrainModule`); the knobs below parameterise it.
+
+# --- Paths -------------------------------------------------------------------
+run_name: pretrain_retriever
+
+# --- Model architecture (shared dims for the QueryViT config + the data) -----
+context_size: 4
+action_dim: 3
+pose_dim: 3
+image_height: 224
+image_width: 224
+len_traj_pred: 128
+goals_per_obs: 4
+
+# --- Optimizer ---------------------------------------------------------------
+lr: 8e-5               # single LR for the QueryViT (the only trainable module).
+weight_decay: 0.0
+grad_clip_val: 1.0
+
+# --- Training schedule -------------------------------------------------------
+iterations: 1000000
+warmup_steps: 5000
+from_checkpoint: null
+global_seed: 0
+log_every: 100
+ckpt_every: 100000
+eval_every: 2500
+
+# --- Performance -------------------------------------------------------------
+bfloat16: false
+
+# --- Data loading ------------------------------------------------------------
+batch_size: 16
+num_workers: 12
+datasets: [loopnav_latent]
+
+# --- Contrastive (InfoNCE) pre-training objective ----------------------------
+# The loss is computed by the training script, not the memory, so its knobs
+# live here rather than under `model.memory.*`.
+contrastive:
+  # Past pool is chunked/dropped exactly as pnp_cl does — tie to the memory's
+  # chunk_size so the two never drift.
+  chunk_size: ${model.memory.chunk_size}
+  positive_pair_type: [temporal, pose, jepa]   # any subset of {temporal, pose, jepa}
+  num_positives: 4
+  num_negatives: 16
+  cl_temperature: 0.1
+  cl_pose_radius:      30.0     # visibility-sphere radius (dataset units)
+  cl_pose_fov_half_h:  52.5     # half-FOV horizontal, DEGREES
+  cl_pose_fov_half_v:  37.5     # half-FOV vertical,   DEGREES
+  cl_pose_num_samples: 1024
+  # Inverse-normalisation stats to recover the goal pose (in context_poses
+  # units) from `action` (= goal_poses_nl). Override with the dataset spec:
+  #   contrastive.local_pos_stats=${loopnav_latent.spec.local_pos_stats}
+  # null = identity (action treated as already in pose units).
+  local_pos_stats: null
+  # --- train_latent_retriever_hard.py ONLY (ignored by train_latent_retriever.py) ---
+  # Weights-only init of the QueryViT (e.g. a jepa pre-training checkpoint);
+  # a fresh optimizer / step counter. Resume-with-state stays `from_checkpoint`.
+  init_from: null
+  # OBJECT-CENTRIC positives (the state-bearing retrieval term). Per-frame
+  # object presence = the backend loss mask's area fraction (set the backend's
+  # mask_suffix, e.g. .agent.npy); the formatter emits it as context_obj.
+  # For a query whose pool contains the object: positives = the pool frames
+  # of the LATEST sighting (pulse = presence frames < obj_pulse_gap_s apart,
+  # walking back from the most recent one), at most obj_num_positives,
+  # weighted by visible area; negatives = object-free pool frames; earlier
+  # sightings neutral. Episode-level (independent of the goal frame's own
+  # content). 0 = off.
+  obj_weight: 1.0
+  obj_num_positives: 8
+  obj_pulse_gap_s: 2.0
+  obj_min_frac: 0.0
+  obj_last_only: true
+  # Mechanism 2 — pose-matched STALE hard negatives: pool frames whose camera
+  # pose matches the GOAL's (position / yaw / pitch tolerance, pose units and
+  # degrees — keep these TIGHT: a few degrees of yaw shifts every latent token
+  # and a rotated twin passes the diff gate as "changed"; the corpora repeat
+  # inspection poses exactly, so 0.05 m / 1 deg costs no coverage) AND whose latent differs from the goal's in >= hard_min_tokens
+  # tokens (per-token MSE > hard_tau; a token count, so a small moved object /
+  # agent counts). Each is up-weighted by hard_neg_weight in the InfoNCE
+  # denominator; hard_sym_weight adds the KEY-anchored symmetric term (the goal
+  # key must be closer to the query than to its stale twins), which is what
+  # puts the state axis into the key space itself.
+  num_hard_negatives: 0          # 0 = off (measured harmful on the corridor corpus as formulated)
+  hard_neg_weight: 4.0
+  hard_pos_tol: 0.05
+  hard_yaw_tol_deg: 1.0
+  hard_pitch_tol_deg: 1.0
+  hard_tau: 0.05
+  hard_min_tokens: 8
+  hard_sym_weight: 1.0
+  # `stride` (= goal_times_nl) is relative to the POOL ORIGIN for every draw,
+  # so it is large regardless of the horizon; null passes it raw, or clip.
+  stride_clip: null
+  # Telemetry only: the current->goal horizon in frames is
+  # stride*max_frame_offset - context_time[current]*fps; a pair counts as
+  # long-horizon beyond len_traj_pred. Set both to the dataset spec's values.
+  max_frame_offset: 10.0
+  fps: 10.0
+
+defaults:
+  - dataset_registry
+  - model/memory: pnp_cl          # only `model.memory.query_vit` is instantiated
+  - wandb: far
+  - override hydra/job_logging: disabled
+  - _self_
+
+hydra:
+  output_subdir: null
+  run:
+    dir: .

@@ -1,0 +1,57 @@
+# AI2-THOR rollout evaluation — DATA COLLECTION ONLY (eval_rollout_thor.py).
+# One .npz record per (arm, clip) under `output_dir`: frame-wise
+# PSNR/LPIPS/DreamSim + event covariates (fed labels, seconds-to-reveal,
+# station) + the in-mask block from the `.change.npy` sidecar (in/out MSE,
+# bbox-crop LPIPS, copy signature vs the top-1 retrieved frame). Existing
+# records are skipped -> resumable; shard clips across GPUs with
+# shard=K num_shards=N. Model/episode/rollout machinery is
+# `far.analysis.thor_rollout` — records replay in rollout_ai2thor.ipynb.
+
+# Arms: label -> run dir + checkpoint. A `latest` checkpoint changes as its
+# run advances, so refreshing it CHANGES what "latest" means — don't resume a
+# battery after refreshing checkpoints without changing output_dir (prefer
+# pinned steps for paper batteries, e.g. "0700000").
+arms:
+  temporal:
+    run_dir: models/ai2thor_v3/temporal
+    ckpt: "0700000"
+  worldmem:
+    run_dir: models/ai2thor_v3/worldmem
+    ckpt: "0700000"
+  pnp_vmz:
+    run_dir: models/ai2thor_v3/far_multicue
+    ckpt: "0700000"
+
+output_dir: results/rollout_eval/thor3_0700000_cs12_stride4
+
+# ── Episode protocol ─────────────────────────────────────────────────────────
+dataset: ai2thor_v3_latent   # config group of the eval corpus
+use_ctrl_set: false  # true = the seed-matched `_ctrl` siblings (same CLIP_IDX
+                     # ordering; reveals show UNCHANGED interiors). Record dirs
+                     # get an `_ctrl` suffix — still use a separate output_dir,
+                     # the eligibility cache is protocol-specific.
+num_clips: null      # eligible test clips (deterministic seeded order); null = all
+start_offset: 0      # eval-leg frames absorbed into context before rollout
+rollout_stride: 4    # GT frames per generation step (fps 10 -> 0.2 s)
+min_steps: 1         # eligibility floor on steps per clip
+max_steps: null        # cap on steps per clip (96 @ stride 2 = 19.2 s of retrace)
+context_pool_size: 1000   # retrieval pool; covers the outbound leg
+pool_phase: exploration   # retrievable history stops at eval_start (battery protocol)
+feed_interact: true  # false = ablation: interaction labels zeroed
+seed: 0              # base seed; per-clip seed = seed + clip index (all arms share it)
+
+# ── In-mask metrics ──────────────────────────────────────────────────────────
+mask_suffix: .change.npy   # eval-family sidecar (union `.change_interact.npy` trains)
+mask_max_frac: 0.10  # skip masks above this grid share (the loss's gate)
+mask_pad: 2          # bbox padding (latent cells) for the crop-LPIPS window
+
+# ── Sampler / retrieval knobs (runtime, applied to every arm) ────────────────
+sampler: ddim        # "ddim" (deterministic) | "ddpm"
+sampling_steps: 20
+pnp_chunk_size: 10   # null = each run's trained value
+context_size: 12     # null = each run's trained value
+worldmem_pool_size: null  # optional worldmem retrieval-pool cap (null = full pool)
+
+# ── Sharding ─────────────────────────────────────────────────────────────────
+shard: 0
+num_shards: 1

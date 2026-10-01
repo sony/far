@@ -1,0 +1,224 @@
+# AI2-THOR "door-corridor" DYNAMIC-AGENT episodes (generator door_corridor_v1),
+# pre-computed
+# SDXL-VAE latents at datasets/ai2thor_dyn/latent. Same latent contract as the
+# TOUR corpora: pair with `model/tokenizer=sdxl_vae` (0.13025 scale), 256x256,
+# fps 10, max_frame_offset 10; THORBackend serves latents + z-up poses (pitch
+# from the quat; the corpus's yaw_pitch_quat layout probes at yaw/heading
+# agreement +1.000).
+#
+# THE TASK (off-screen evolution / episodic memory of a second agent): the
+# observer (A1) watches a corridor through a doorway from inside a room; a
+# second agent (A2) crosses the doorway K times (alternating ends, all crossings
+# OBSERVED), stops at its final end, then A1 walks out and looks at both
+# corridor ends — the model must render A2 at the end it ARRIVED at. Leg
+# structure (meta.json `legs`): prologue_out, pro_look_A, pro_look_B (both
+# ends seen EMPTY — the appearance the reveal must be composed onto),
+# prologue_back, watch (all K visibility pulses), then the eval legs go_door
+# (`eval_start`), look_A, look_B — pose-identical to the pro_look pair.
+# `agent2.npz` is the A2 ground truth (x/z every frame, `px` on-screen pixels
+# = the visibility authority, `state`); `meta.json` carries K / spawn / final
+# (the A/B label) / the leak audit (`qc`).
+#
+# SPLITS — the SEED carve:
+#   DEFAULT (this file): the SEED carve (meta `split_seed`, seed%5 == 0 -> test):
+#     every one of the 7 scenes in BOTH splits — indices are ACT-ONLY: 800
+#     train / 202 test. The IN-SCENE protocol: unseen episodes of seen
+#     scenes. With only 5-7 scenes a world model cannot learn cross-scene
+#     appearance generalisation, so a scene-held-out eval would conflate
+#     "cannot render an unseen corridor" with "cannot remember"; in-scene,
+#     rendering is free and the ONLY thing left to test is the crossing
+#     direction recovered from the context (labels balanced; K / spawn /
+#     timing drawn independently of the label; test seeds unseen). The
+#     cross-scene rendering claim is carried by THOR (95 / 24 scenes).
+#   The scene-disjoint carve (meta `split`, SPLITS.json: 5 train / 2 test
+#     scenes) is NOT shipped as index files — rebuild it if ever needed with
+#     --split-field split.
+# 1,002 `_act` episodes. Rebuild with scripts/data/build_manifest_ai2thor.py
+# --split-field split_seed --allow-scene-overlap --kind act.
+#
+# Sidecars built for every episode: retriever keys `latents.keys_thor_v1.npy`
+# (the v0.4 jepa tower @400k — the SAME key space as ai2thor_v3; note it was
+# pre-trained on agent-free scenes and registers A2 only weakly: pose-matched
+# act-vs-ctrl linear-probe AUC 0.75 vs 0.82 for raw latents) and the AGENT
+# silhouette loss mask `latents.agent.npy` (A2's exact body mask on the 32x32
+# latent grid, ~3.4% of cells when present, all-zero when off-screen).
+# No `actions.npz`: the ego never acts on the world, so THORBackend
+# zero-fills the interaction counts / state labels.
+spec:
+  _target_: far.builders.data.build_dataspec
+  # Identity-range stats — the convention every latent corpus trains with.
+  local_pos_stats:
+    min: [0, 0, 0]
+    max: [1, 1, 1]
+  meters_per_waypoint: 1.0
+  max_frame_offset: 10.0
+  len_traj_pred: ${len_traj_pred}
+  planner_mu_init: [-0.1, 0, 0, 0, 0]
+  planner_sigma_init: [0.02, 0.1, 0, 0, 0.3142]
+  pose_fields: ["x", "y", "z", "pitch", "yaw"]
+  pose_dim: 5
+  pos_dim: 3
+  angle_dim: 2
+  pose_mode: "3d"
+  fps: 10.0
+
+shared:
+  manifest_path: results/manifests/ai2thor_dyn/ai2thor_dyn_latent.json
+  backend:
+    # THORDynBackend = THORBackend + the two REVEAL ONSETS (code 0 = start of
+    # look_A, 1 = start of look_B) served to the sampler as pseudo-event spans
+    # for the reveal-anchored draw below; interaction labels stay all-zero.
+    _target_: far.data.backends.THORDynBackend
+    reveal_anchor: true
+    # The reveal span STARTS at eval_start + reveal_start_offset (frames), a
+    # fixed point early in go_door: the anchored current is drawn event_pre
+    # frames before it, so the current window never depends on A2 (a start
+    # pulled to the first glimpse of A2 would leak the final end through the
+    # current's position along go_door).
+    # Must match the offset the reveal event index was built with.
+    reveal_start_offset: 12
+    # SECOND-AGENT DETECTION as part of the observation:
+    # true -> every frame carries `[vi, dx, dy, vi', dx', dy']` — A2 in view
+    # (agent2.npz px >= agent_state_px_min) and its position in the frame's own
+    # egocentric floor coordinates (forward, left), plus the same triple
+    # `agent_state_pair_s` seconds earlier so a slot carries velocity. The
+    # formatter emits `context_agent_state` (6) and `goal_agent_state` (3, the
+    # predictor's target). Pair with `model/generator=cdit_b_2_agent_fa`.
+    agent_state: false
+    agent_state_pair_s: 1.5
+    # detector-like visibility threshold (px); the door-aperture glimpses sit at
+    # a few hundred px
+    agent_state_px_min: 1
+    # optional position noise as a fraction of range (deterministic per episode)
+    agent_state_noise: 0.0
+    # ".keys_thor_v1.npy" = keys from the jepa-pretrained QueryViT applied to
+    # this corpus — the same key space as ai2thor_v3, agent-blind in practice;
+    # ".keys_obj_v1.npy" = keys from the OBJECT-CENTRIC fine-tune of that tower
+    # (train_latent_retriever_hard.py) — pair it with model.memory.ckpt_path =
+    # the checkpoint that built them (keys and query tower MUST come from the
+    # same weights). null -> live QueryViT encoding.
+    key_suffix: null
+    # ".agent.npy" = A2's silhouette on the latent grid, consumed as a
+    # diffusion-loss weight via `model.mask_loss_lambda`. Masks are SMALL
+    # (~3.4% of the grid), so no mask_max_frac gating is needed — the
+    # default gate never fires. null -> uniform loss.
+    mask_suffix: null
+  transform: null
+
+sampler:
+  random_clip:
+    _target_: far.data.samplers.RandomClipSampler
+    clip_len: 16
+    frame_stride: 5
+  # context_pool_size 400 = 40 s at fps 10, drawn uniformly from the PRE-EVAL
+  # span (median eval_start 1388, p10 767 -> no episode left-pads at 400).
+  # A2 is on screen for ~16% of the pre-eval span (median 240 frames, the K
+  # watch-leg pulses), so a 400-frame pool holds ~64 A2 frames in expectation
+  # (~32 at 200) — enough for the crossing to be retrievable, which is the
+  # point of the task.
+  context_goal:
+    _target_: far.data.samplers.ContextGoalSampler
+    context_pool_size: 400
+    len_traj_pred: ${len_traj_pred}
+    goals_per_obs: ${goals_per_obs}
+    # REVEAL-ANCHORED DRAW (this corpus's analog of the AI2-THOR v3 event
+    # bias). The backend serves two pseudo-spans that both START at
+    # eval_start + reveal_start_offset (a fixed point early in go_door, before
+    # any end is looked at) and END at the look_A onset (code 0) or the look_B
+    # onset (code 1); with event_goal_anchor=end an anchored pair is current =
+    # span start - U[event_pre] frames (the current has seen NO end, and its
+    # position along go_door depends on nothing A2 does — a start pulled to
+    # the first frame that glimpses A2 through the door aperture would leak
+    # the answer); goals in [end onset + 8, end onset + 30] (0.8-3 s after
+    # end A or end B comes into view, drawn equally). The goal shows A2 iff it
+    # arrived at that end, and NOTHING in the current frame or in an earlier
+    # look settles it — in particular the B pairs are not the 'end A was
+    # empty, so paint B' second look. Under the plain uniform draw only ~5% of
+    # pairs need memory (many can copy A2 from the current frame, most empty
+    # goals are settled views), which teaches a model to hedge (paint at both
+    # ends). The B pairs reach across look_A, so the anchored draw has its own
+    # horizon (event_len_traj_pred) while the uniform draw keeps len_traj_pred
+    # (32). The RATE is set by the train dataset's event_frac (exact, via the
+    # event index) and, for the in-training eval, by event_bias_p below; keep
+    # event_bias_p 0 here.
+    event_bias_p: 0.0
+    event_phase: eval
+    event_codes: null
+    event_pre: [0, 10]
+    event_post: [8, 30]
+    event_goal_anchor: end
+    # Horizon of the ANCHORED draw only (the current sits in the first 12
+    # go_door frames and the B-end goals lie past look_A: corpus p90 110, max
+    # 133); the uniform draw keeps len_traj_pred (32), the short rollout-like horizon.
+    event_len_traj_pred: 135
+    # Context pool = OBSERVATION history only (frames before eval_start =
+    # go_door) — a reveal must be answered from memory of the crossings, never
+    # from a fresher eval-leg look at the corridor ends.
+    pool_phase: pre_eval
+    # Long-horizon pairs (retriever pre-training with train_latent_retriever_hard.py):
+    # with prob long_horizon_p the current frame is drawn from the PRE-eval span
+    # and the goals from the eval leg — "doorway view -> reveal". 0 = off.
+    long_horizon_p: 0.0
+    long_horizon_min_past: 50
+  context_goal_test:
+    _target_: far.data.samplers.ContextGoalSampler
+    context_pool_size: 400
+    len_traj_pred: ${len_traj_pred}
+    goals_per_obs: 4
+    pool_phase: pre_eval
+    # In-training eval: the same reveal-anchored pairs at the same rate via the
+    # sampler's own Bernoulli (every act episode has both onsets, so the
+    # realized rate ~ event_bias_p) — eval/mask_* then measure REVEALS.
+    event_bias_p: 0.35
+    event_phase: eval
+    event_codes: null
+    event_pre: [0, 10]
+    event_post: [8, 30]
+    event_goal_anchor: end
+    # Horizon of the ANCHORED draw only (the current sits in the first 12
+    # go_door frames and the B-end goals lie past look_A: corpus p90 110, max
+    # 133); the uniform draw keeps len_traj_pred (32), the short rollout-like horizon.
+    event_len_traj_pred: 135
+    long_horizon_p: 0.0
+    long_horizon_min_past: 50
+  context_traj:
+    _target_: far.data.samplers.ContextTrajectorySampler
+    context_pool_size: 400
+    len_traj_pred: ${len_traj_pred}
+    pool_phase: pre_eval
+
+formatter:
+  frame:
+    _target_: far.data.formatters.FrameFormatter
+  context_pose:
+    _target_: far.data.formatters.ContextPoseFormatter
+    spec: ${ai2thor_dyn_latent.spec}
+
+train:
+  _target_: far.data.datasets.FormattedVideoDataset
+  formatter: ${ai2thor_dyn_latent.formatter.context_pose}
+  base_dataset:
+    _target_: far.data.datasets.VideoDataset
+    manifest_path: ${ai2thor_dyn_latent.shared.manifest_path}
+    index_path: results/indices/ai2thor_dyn/ai2thor_dyn_latent_train.json
+    backend: ${ai2thor_dyn_latent.shared.backend}
+    sampler: ${ai2thor_dyn_latent.sampler.context_goal}
+    transform: ${ai2thor_dyn_latent.shared.transform}
+    # Reveal-anchored clip substitution: with probability event_frac the drawn
+    # clip is replaced by one from the reveal index (every act episode; built by
+    # scripts/data/build_event_index_ai2thor.py --spans reveal with the SAME
+    # event_pre/post) and the anchored draw is forced -> an exact 35% marginal
+    # rate of reveal pairs. null -> plain uniform draw.
+    event_index_path: results/indices/ai2thor_dyn/ai2thor_dyn_latent_train_events.json
+    event_frac: 0.35
+
+test:
+  _target_: far.data.datasets.FormattedVideoDataset
+  formatter: ${ai2thor_dyn_latent.formatter.context_pose}
+  base_dataset:
+    _target_: far.data.datasets.VideoDataset
+    manifest_path: ${ai2thor_dyn_latent.shared.manifest_path}
+    index_path: results/indices/ai2thor_dyn/ai2thor_dyn_latent_test.json
+    backend: ${ai2thor_dyn_latent.shared.backend}
+    sampler: ${ai2thor_dyn_latent.sampler.context_goal_test}
+    transform: ${ai2thor_dyn_latent.shared.transform}

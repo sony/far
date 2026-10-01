@@ -1,0 +1,62 @@
+_target_: far.builders.models.build_ldwm
+_recursive_: false
+
+defaults:
+  - tokenizer: sd_vae
+  - generator: cdit_b_2_mod_pose_fa
+  - memory: temporal
+  - _self_
+
+condition_on_context_time: true
+condition_on_context_pose: true
+
+# Coefficient on the RAG retriever posterior-distillation loss
+# (L_ret = -Σ_j q_j log p_η(z_j|Q)) computed lazily in `LDWMCore.rag_step`
+# (every `rag_every` steps; see world_train.yaml). Trains pnp_cl's QueryViT to
+# match the EM posterior over the K context sets. 0.0 disables the EM retriever
+# update. No-op for K=1 / non-set memories. τ for the posterior is a global
+# EMA of `2·std_K` over the de-noised multi-noise spread.
+retriever_loss_weight: 1.0
+
+# Mask-weighted diffusion loss (see LDWMCore). With a per-goal change mask in
+# the batch, the changed region carries ~lambda/(1+lambda) of the loss instead
+# of its ~2% area share — what stops "copy the best-matching context frame"
+# from being near-optimal. The weight has mean 1 per sample, so the loss scale
+# is unchanged. 0.0 = off (bit-identical to an unweighted run).
+#   lambda 0.25 -> ~20% of the loss | 0.43 -> ~30% | 1.0 -> ~50%
+mask_loss_lambda: 0.0
+# Reject masks covering more than this fraction of latent tokens as viewpoint
+# smear (genuine change regions measure ~1.8%); those goals use uniform loss.
+mask_max_frac: 0.1
+# Same weighting on the RAG reward in `rag_step`, so the retriever's EM
+# posterior ranks candidate sets by how well they predict WHAT CHANGED rather
+# than by overall scene match. null = inherit mask_loss_lambda; set 0.0 to
+# weight only the generator's loss (independent ablation). Applies to BOTH
+# RAG rewards: rag_step (diffusion loss) and rag_step_ddim (sampled x0 MSE).
+rag_mask_loss_lambda: null
+# AGENT-STATE PROTOCOL — active only with
+# `model/generator=cdit_b_2_agent_fa` and a dataset serving `context_agent_state`
+# (THORDynBackend `agent_state: true`); inert otherwise. Weight of the
+# predictor's loss (BCE on the second agent's presence at the goal + masked
+# position error) in the training loss, and its weight inside every EMDR2
+# candidate reward (rag_step / rag_step_ddim), on top of the diffusion term.
+agent_loss_weight: 1.0
+agent_reward_weight: 1.0
+# The DiT's agent-state conditioning is BINARISED to `[±1, dx, dy]`: the
+# ground-truth state in training (teacher forcing, so both a confident
+# 'present' and a confident 'absent' arm are learned), the sign of the
+# predictor's logit when sampling. false = the raw soft prediction (under
+# which the DiT only ever sees hedged probabilities and learns to paint the
+# agent at low ones).
+agent_cond_binary: true
+
+diffusion:
+  _target_: far.generators.diffusion.create_diffusion
+  timestep_respacing: null
+  noise_schedule: linear
+  diffusion_steps: 1000
+  learn_sigma: true
+  predict_xstart: false
+  sigma_small: false
+  use_kl: false
+  rescale_learned_sigmas: false

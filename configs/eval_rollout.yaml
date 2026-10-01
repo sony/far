@@ -1,0 +1,52 @@
+# Per-frame rollout evaluation over the test set — DATA COLLECTION ONLY.
+# `scripts/world/eval_rollout.py` rolls every arm along the SAME return-leg
+# episodes (frame-by-frame AR, rollout_meta.ipynb protocol) and writes one
+# compressed record per (arm, clip) under `output_dir`:
+#   metrics (PSNR/LPIPS/DreamSim per step), per-step covariates (frame index,
+#   seconds from start / to end, fractional progress, pose distance to the
+#   loop-closure point), and retrieval diagnostics (per-step picked-frame Δt +
+#   pose distance). Presentation/aggregation is a separate analysis step.
+# Records are SKIPPED when they already exist → resumable; shard clips across
+# GPUs by launching one process per shard (shard=K num_shards=N).
+
+# Shared protocol. Run a corpus with `--config-name eval_rollout_<corpus>`, which sets
+# the arms, dataset, output_dir and stride. Arms: label -> run dir + checkpoint step. All runs must share one pose
+# convention (asserted). The dataset is built from the LAST arm's saved
+# config; `dataset` names the config group (loopnav_latent /
+# soundspaces_latent). When any arm's memory queries by cue (soundspaces
+# pnp_audio / pnp_amz), the backend is forced to audio_mode=cue +
+# key_suffix=.keys_audio.npy automatically.
+arms: {}   # set by the per-corpus configs eval_rollout_{loopnav,soundspaces,soundspaces_v2}.yaml
+
+output_dir: ???        # set by the per-corpus config
+
+# ── Episode protocol ─────────────────────────────────────────────────────────
+num_clips: null        # eligible test clips evaluated (deterministic order);
+                       # null = EVERY eligible clip in the test split (the
+                       # scan walks the full` seeded permutation and keeps all
+                       # clips whose return leg yields >= max(1, min_steps)
+                       # steps — ~3.8k of the 3840 test clips at stride 4)
+start_offset: 0      # GT return-leg frames absorbed into context before rollout
+rollout_stride: 16    # GT frames per generation step; 1 = EVERY return-leg frame
+min_steps: 0        # eligibility: clip must yield at least this many steps
+max_steps: null      # optional cap on steps per clip (null = to trajectory end)
+context_pool_size: 1000
+seed: 0              # base seed; per-clip seed = seed + clip index (same for all arms)
+dataset: ???           # set by the per-corpus config (loopnav_latent / soundspaces_latent / soundspaces_v2_latent)
+# Observability filter (soundspaces): drop eligible clips whose outbound->return
+# view coverage is below this floor (null = no filter). Scores come from
+# scripts/data/build_observability_soundspaces.py; unscored clips are dropped
+# too. Part of the eligibility-cache params, so changing it triggers a rescan.
+min_coverage: null
+observability_path: results/observability/soundspaces_observability.json
+
+# ── Sampler / retrieval knobs (runtime, applied to every arm) ────────────────
+sampler: ddim        # "ddim" (deterministic) | "ddpm"
+sampling_steps: 20   # reverse-diffusion steps per generated frame
+pnp_chunk_size: 10 # null = each run's trained value
+context_size: 12   # null = each run's trained value
+worldmem_pool_size: 200  # train-matched retrieval-pool cap for worldmem (null = full)
+
+# ── Sharding ─────────────────────────────────────────────────────────────────
+shard: 0
+num_shards: 1
