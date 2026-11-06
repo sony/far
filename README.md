@@ -10,8 +10,12 @@
 [![Project page](https://img.shields.io/badge/Project-page-e8710a.svg)](https://1202kbs.github.io/FAR-Project-Page/)
 [![Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-checkpoints%20%26%20data-ffcc4d.svg)](https://huggingface.co/collections/1202kbs/learning-what-to-recall-far-6abc76068f6e916201cfd078)
 [![License: CC BY-NC 4.0](https://img.shields.io/badge/License-CC%20BY--NC%204.0-lightgrey.svg)](LICENSE)
+[![8b-is](https://img.shields.io/badge/org-8b--is-purple.svg)](https://github.com/8b-is)
 
 </div>
+
+> **8b-is Sovereign `BFP-64` + `MEM|8` Episodic Memory Extension (`src/far/memories/mem8_bfp64_pq.py`):**
+> Compresses `QueryViT` episodic frame keys by **`3.94×`** (`65 bytes` per 64 dims vs `256 bytes` FP32) using **Omni `BFP-64`**, precomputes exact integer reciprocal L2 norms (`inv_norm_q30` via `isqrt_u128`) so cosine recall over thousands of past frames requires **zero square roots and zero float divisions per frame**, and automatically promotes high-surprise / object-interaction state-transition frames (such as placing the tomato in the drawer on AI2-THOR Clip 350) from `BFP-i8` to `BFP-i16` (`MEM|8 Adaptive`, `< 2e-4` cosine error). Aligned with [`8b-is/Engram`](https://github.com/8b-is/Engram) and [`8b-is/alexiai`](https://github.com/8b-is/alexiai). Run offline verification via `python3 tests/test_mem8_bfp64_pq.py -v`.
 
 <p align="center">
   <img src="assets/teaser.png" width="100%" alt="FAR compared with WorldMem on LoopNav, single- versus multi-cue FAR on SoundSpaces, and FAR versus WorldMem on an AI2-THOR fridge">
